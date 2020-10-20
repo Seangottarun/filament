@@ -1293,25 +1293,22 @@ void VulkanDriver::stopCapture(int) {
 
 }
 
-void VulkanDriver::readPixels(Handle<HwRenderTarget> src,
-        uint32_t x, uint32_t y, uint32_t width, uint32_t height,
-        PixelBufferDescriptor&& pbd) {
-    // TODO: add support for all types listed in the Renderer docstring for readPixels.
-    assert(pbd.type == PixelBufferDescriptor::PixelDataType::UBYTE);
-
+void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y,
+        uint32_t width, uint32_t height, PixelBufferDescriptor&& pbd) {
     const VkDevice device = mContext.device;
+    const VulkanRenderTarget* srcTarget = handle_cast<VulkanRenderTarget>(mHandleMap, src);
+    const VulkanTexture* srcTexture = srcTarget->getColor(0).texture;
+    const VkFormat swapChainFormat = mContext.currentSurface->surfaceFormat.format;
+    const VkFormat srcFormat = srcTexture ? srcTexture->vkformat : swapChainFormat;
+    const bool swizzle = srcFormat == VK_FORMAT_B8G8R8A8_UNORM;
 
     // Create a host visible, linearly tiled image as a staging area.
 
     VkImageCreateInfo imageInfo {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_UNORM,
-        .extent = {
-            .width = width,
-            .height = height,
-            .depth = 1,
-        },
+        .format = srcFormat,
+        .extent = { width, height, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -1336,9 +1333,6 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src,
     vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory);
     vkBindImageMemory(device, stagingImage, stagingMemory, 0);
 
-    // TODO: Should we allow readPixels within beginFrame / endFrame?
-
-    assert(mContext.currentCommands == nullptr);
     acquireWorkCommandBuffer(mContext);
 
     // Transition the staging image layout.
@@ -1369,7 +1363,6 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src,
 
     // Transition the source image layout (which might be the swap chain)
 
-    VulkanRenderTarget* srcTarget = handle_cast<VulkanRenderTarget>(mHandleMap, src);
     VkImage srcImage = srcTarget->getColor(0).image;
     VulkanTexture::transitionImageLayout(mContext.work.cmdbuffer, srcImage,
             VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1383,7 +1376,6 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src,
 
     // Restore the source image layout.
 
-    VulkanTexture* srcTexture = srcTarget->getColor(0).texture;
     if (srcTexture || mContext.currentSurface->presentQueue) {
         const VkImageLayout present = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         VulkanTexture::transitionImageLayout(mContext.work.cmdbuffer, srcImage,
@@ -1440,28 +1432,14 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src,
         vkMapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, (void**) &srcPixels);
         srcPixels += subResourceLayout.offset;
 
-        uint8_t* dstPixels = (uint8_t*) closure->buffer;
         const uint32_t dstStride = closure->stride ? closure->stride : width;
         const int dstBytesPerRow = PixelBufferDescriptor::computeDataSize(closure->format,
                 closure->type, dstStride, 1, closure->alignment);
         const int srcBytesPerRow = subResourceLayout.rowPitch;
-        const VkFormat swapChainFormat = mContext.currentSurface->surfaceFormat.format;
-        const bool swizzle = !srcTexture && swapChainFormat == VK_FORMAT_B8G8R8A8_UNORM;
 
-        switch (closure->format) {
-            case PixelDataFormat::RGB:
-            case PixelDataFormat::RGB_INTEGER:
-                DataReshaper::reshapeImage<uint8_t, 4, 3>(dstPixels, srcPixels, srcBytesPerRow,
-                        dstBytesPerRow, height, swizzle);
-                break;
-            case PixelDataFormat::RGBA:
-            case PixelDataFormat::RGBA_INTEGER:
-                DataReshaper::reshapeImage<uint8_t, 4, 4>(dstPixels, srcPixels, srcBytesPerRow,
-                        dstBytesPerRow, height, swizzle);
-                break;
-            default:
-                utils::slog.e << "ReadPixels: invalid PixelDataFormat" << utils::io::endl;
-                break;
+        if (!DataReshaper::reshapeImage(closure, getComponentType(srcFormat), srcPixels,
+                srcBytesPerRow, dstBytesPerRow, height, swizzle)) {
+            utils::slog.e << "Unsupported PixelDataFormat or PixelDataType" << utils::io::endl;
         }
 
         vkUnmapMemory(device, stagingMemory);
