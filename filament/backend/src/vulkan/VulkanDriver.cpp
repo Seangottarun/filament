@@ -1432,13 +1432,8 @@ void VulkanDriver::readPixels(Handle<HwRenderTarget> src, uint32_t x, uint32_t y
         vkMapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, (void**) &srcPixels);
         srcPixels += subResourceLayout.offset;
 
-        const uint32_t dstStride = closure->stride ? closure->stride : width;
-        const int dstBytesPerRow = PixelBufferDescriptor::computeDataSize(closure->format,
-                closure->type, dstStride, 1, closure->alignment);
-        const int srcBytesPerRow = subResourceLayout.rowPitch;
-
         if (!DataReshaper::reshapeImage(closure, getComponentType(srcFormat), srcPixels,
-                srcBytesPerRow, dstBytesPerRow, height, swizzle)) {
+                subResourceLayout.rowPitch, width, height, swizzle)) {
             utils::slog.e << "Unsupported PixelDataFormat or PixelDataType" << utils::io::endl;
         }
 
