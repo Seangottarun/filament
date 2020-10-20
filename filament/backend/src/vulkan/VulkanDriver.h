@@ -77,6 +77,11 @@ private:
     VulkanDriver(VulkanDriver const&) = delete;
     VulkanDriver& operator = (VulkanDriver const&) = delete;
 
+    void purge() noexcept override {
+        mDisposer.gc();
+        DriverBase::purge();
+    }
+
 private:
     backend::VulkanPlatform& mContextManager;
 
